@@ -1,6 +1,6 @@
-# Civitai LoRA Metadata & Trigger Word Scraping: Architectural Blueprint & Extraction Guide
+# Civitai LoRA Metadata, Trigger Words & Example Prompts Scraping Guide
 
-This document provides a comprehensive architectural map and step-by-step extraction guide for porting the Civitai LoRA metadata scanning, SHA-256 hash lookup, trigger word extraction, and header fingerprinting system from **Anomalous Model Browser** into another project or standalone microservice.
+This document provides a comprehensive architectural map and step-by-step extraction guide for porting Civitai LoRA metadata scanning, SHA-256 hash lookup, trigger word extraction, **example image prompt parsing**, and header fingerprinting system from **Anomalous Model Browser** into another project (such as a Krita AI Diffusion plugin).
 
 ---
 
@@ -38,7 +38,10 @@ The LoRA metadata scanning capability consists of 5 main files in this repositor
                                               - Model Name & Version Name
                                               - Base Model (e.g. SDXL, SD 1.5, Flux.1 D)
                                               - trainedWords (Trigger Words list)
-                                              - Primary Preview Media URL
+                                              - Example Images & Metadata:
+                                                * prompt
+                                                * negativePrompt
+                                                * cfgScale, steps, sampler, seed
                                                    │
                                                    ▼
                                            5. HTTP GET https://civitai.com/api/v1/models/{modelId}
@@ -96,7 +99,15 @@ def calculate_sha256(file_path: str) -> str:
   "images": [
     {
       "url": "https://image.civitai.com/xG123/.../cover.jpeg",
-      "nsfwLevel": 1
+      "nsfwLevel": 1,
+      "meta": {                 // <--- EXAMPLE IMAGE GENERATION PROMPT & PARAMS
+        "prompt": "1girl, solo, anime style, masterpiece, wearing kimono, autumn leaves",
+        "negativePrompt": "easynegative, low quality, bad anatomy",
+        "cfgScale": 7,
+        "steps": 25,
+        "sampler": "DPM++ 2M Karras",
+        "seed": 1234567890
+      }
     }
   ],
   "files": [
@@ -155,48 +166,9 @@ def infer_base_model_from_header(file_path: str) -> str:
 
 ---
 
-### D. Standard `.info` Sidecar JSON Spec
+## 4. Standalone Extraction Blueprint (With Example Prompts)
 
-To store metadata locally alongside `my_lora.safetensors`, write `my_lora.info`:
-
-```json
-{
-  "id": 123456,
-  "modelId": 98765,
-  "name": "v1.0",
-  "baseModel": "SD 1.5",
-  "trainedWords": [
-    "trigger_word_1",
-    "trigger_word_2"
-  ],
-  "description": "<p>Model description HTML</p>",
-  "model": {
-    "name": "My Custom LoRA Name",
-    "type": "LORA"
-  },
-  "files": [
-    {
-      "hashes": {
-        "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      }
-    }
-  ],
-  "anomalous_file_identity": {
-    "algorithm": "sha256",
-    "scope": "file",
-    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "size": 37748736,
-    "mtime_ns": 1700000000000000000,
-    "source": "computed"
-  }
-}
-```
-
----
-
-## 4. Standalone Extraction Blueprint
-
-To port this logic into another project, you only need to extract a single self-contained Python module (e.g. `civitai_lora_scanner.py`):
+Below is a self-contained Python module (e.g., `civitai_lora_scanner.py`) suitable for integration into a Krita Python plugin or backend:
 
 ```python
 import os
@@ -242,8 +214,24 @@ class CivitaiLoraScanner:
                 "sha256": file_hash,
                 "found_on_civitai": False,
                 "trainedWords": [],
-                "baseModel": "Unknown"
+                "baseModel": "Unknown",
+                "example_prompts": []
             }
+
+        # Parse example image prompts & generation parameters from Civitai metadata
+        example_prompts = []
+        for img in data.get("images", []):
+            meta = img.get("meta")
+            if meta and isinstance(meta, dict) and meta.get("prompt"):
+                example_prompts.append({
+                    "image_url": img.get("url"),
+                    "prompt": meta.get("prompt", ""),
+                    "negative_prompt": meta.get("negativePrompt", ""),
+                    "cfg_scale": meta.get("cfgScale"),
+                    "steps": meta.get("steps"),
+                    "sampler": meta.get("sampler"),
+                    "seed": meta.get("seed")
+                })
 
         return {
             "file_path": file_path,
@@ -255,11 +243,16 @@ class CivitaiLoraScanner:
             "trainedWords": data.get("trainedWords", []),
             "civitai_model_id": data.get("modelId"),
             "civitai_version_id": data.get("id"),
-            "cover_image_url": data["images"][0]["url"] if data.get("images") else None
+            "cover_image_url": data["images"][0]["url"] if data.get("images") else None,
+            "example_prompts": example_prompts
         }
 
-# Usage example:
+# Usage example for Krita AI Diffusion plugin:
 # scanner = CivitaiLoraScanner(api_key="YOUR_KEY")
-# result = scanner.scan_lora("path/to/my_lora.safetensors")
-# print("Trigger Words:", result["trainedWords"])
+# lora_info = scanner.scan_lora("/path/to/krita/loras/my_style.safetensors")
+#
+# print("Trigger Words:", lora_info["trainedWords"])
+# for ex in lora_info["example_prompts"]:
+#     print("Example Prompt:", ex["prompt"])
+#     print("Negative Prompt:", ex["negative_prompt"])
 ```
